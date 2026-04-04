@@ -221,16 +221,12 @@ struct HW4Handler : public CarManagerBase {
           echo.data[3] + echo.data[4] + echo.data[5] +
           echo.data[6];
 
-      echo.data[7] = (uint8_t)((sum + 0x73) & 0xFF);
-
-      framesSent++;
-      nagEchoCount++;
+      echo.data[7] = (uint8_t)((sum + 0x73) & 0xFF); 
 
       twaiSend(echo);
 
-      if (enablePrint && (nagEchoCount % 500 == 1)) {
-        Serial.print("Nag echo=");
-        Serial.println(nagEchoCount);
+      if (enablePrint) {
+        Serial.print("Nag");
       }
     }
 
@@ -293,6 +289,7 @@ struct HW4Handler : public CarManagerBase {
     }
 
     return;
+  }
   }
 };
 
