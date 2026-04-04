@@ -128,60 +128,98 @@ struct CarManagerBase {
 
 struct HW4Handler : public CarManagerBase {
   void handelMessage(CanFrame& frame) override {    
-    if (frame.can_id == 921 && frame.can_dlc >= 8) {
+  
+  // 只接收 880 / 921 / 1016 / 1021  
+  if (!(frame.can_id == 880 ||
+      frame.can_id == 921 ||
+      frame.can_id == 1016 ||
+      frame.can_id == 1021)) {
+    return;
+  }
 
-      // Modify only if bit5 not set (to avoid duplicate sending).
-      if (!(frame.data[1] & 0x20)) {
+  // =========================
+  // 921 - ISA CHIME SUPPRESS
+  // =========================
+  if (frame.can_id == 921 && frame.can_dlc >= 8) {
 
-        frame.data[1] |= 0x20;
+    if (!(frame.data[1] & 0x20)) {
 
-        // Calculate the verification (simple sum)
-        uint8_t sum = 0;
-        for (int i = 0; i < 7; ++i) {
-          sum += frame.data[i];
-        }
+      frame.data[1] |= 0x20;
 
-        // Added verification to CAN ID (constant optimization) CAN ID 加入校验（常量优化）
-        constexpr uint16_t ID = 921;
-        sum += static_cast<uint8_t>(ID & 0xFF);
-        sum += static_cast<uint8_t>(ID >> 8);
-
-        frame.data[7] = sum;
-        twaiSend(frame);
-        if (enablePrint) {
-          Serial.printf("ISA SPEED CHIME SUPPRESS\n");
-        }
+      uint8_t sum = 0;
+      for (int i = 0; i < 7; ++i) {
+        sum += frame.data[i];
       }
+
+      const uint16_t ID = 921;
+      sum += (uint8_t)(ID & 0xFF);
+      sum += (uint8_t)(ID >> 8);
+
+      frame.data[7] = sum;
+
+      twaiSend(frame);
+
+      if (enablePrint) {
+        Serial.println("ISA SPEED CHIME SUPPRESS");
+      }
+    }
+    return;
+  }
+
+  // =========================
+  // 880 - NAG（只处理880！！！）
+  // =========================
+  if (frame.can_id == 880 && frame.can_dlc >= 8) {
+
+    // 防止处理自己发的帧（关键）
+    if (frame.data[4] & 0x40) {
       return;
     }
 
     uint8_t handsOn = (frame.data[4] >> 6) & 0x03;
 
-    if (handsOn == 0){
+    if (handsOn == 0) {
+      // ===== 防检测控制 =====
+      static uint32_t lastSend = 0;
+
+      uint32_t now = millis();
+      uint32_t interval = 10 + random(0, 5);
+
+      if (now - lastSend < interval) return;
+
+      // ===== 概率发送 =====
+      if (random(0, 100) < 10) {
+          return;
+      }
+
+      lastSend = now;
+
       CanFrame echo;
-      echo.id = 880;
-      echo.dlc = 8;
+      echo.can_id = 880;
+      echo.can_dlc = 8;
 
       echo.data[0] = frame.data[0];
       echo.data[1] = frame.data[1];
       echo.data[2] = frame.data[2];
       echo.data[5] = frame.data[5];
 
-      // 固定扭矩 = 1.80 Nm
-      echo.data[3] = 0xB6;
+      // ===== torque随机化 =====
+      uint8_t baseTorque = 0xB6;
+      echo.data[3] = baseTorque + random(-2, 3);
 
-      // handsOnLevel = 1
+      // handsOn = 1
       echo.data[4] = frame.data[4] | 0x40;
 
-      // Counter + 1
+      // counter++
       uint8_t cnt = (frame.data[6] & 0x0F);
       cnt = (cnt + 1) & 0x0F;
       echo.data[6] = (frame.data[6] & 0xF0) | cnt;
 
-      // Checksum
-      uint16_t sum = echo.data[0] + echo.data[1] + echo.data[2] +
-                    echo.data[3] + echo.data[4] + echo.data[5] +
-                    echo.data[6];
+      // checksum
+      uint16_t sum =
+          echo.data[0] + echo.data[1] + echo.data[2] +
+          echo.data[3] + echo.data[4] + echo.data[5] +
+          echo.data[6];
 
       echo.data[7] = (uint8_t)((sum + 0x73) & 0xFF);
 
@@ -191,44 +229,70 @@ struct HW4Handler : public CarManagerBase {
       twaiSend(echo);
 
       if (enablePrint && (nagEchoCount % 500 == 1)) {
-          Serial.print("NagHandler: echo=");
-          Serial.println(nagEchoCount);
-      }
-    } 
-    
-    if (frame.can_id == 1016) {
-      auto fd = (frame.data[5] & 0b11100000) >> 5;
-      switch (fd) {
-        case 1: speedProfile = 3; break;
-        case 2: speedProfile = 2; break;
-        case 3: speedProfile = 1; break;
-        case 4: speedProfile = 0; break;
-        case 5: speedProfile = 4; break;
+        Serial.print("Nag echo=");
+        Serial.println(nagEchoCount);
       }
     }
-    if (frame.can_id == 1021) {
-      auto index      = readMuxID(frame);
-      if (index == 0) FSDEnabled = isFSDSelectedInUI(frame);
-      if (index == 0 && FSDEnabled) {
+
+    return;
+  }
+
+  // =========================
+  // 1016 - Speed Profile
+  // =========================
+  if (frame.can_id == 1016 && frame.can_dlc >= 6) {
+
+    uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
+
+    switch (fd) {
+      case 1: speedProfile = 3; break;
+      case 2: speedProfile = 2; break;
+      case 3: speedProfile = 1; break;
+      case 4: speedProfile = 0; break;
+      case 5: speedProfile = 4; break;
+    }
+
+    return;
+  }
+
+  // =========================
+  // 1021 - FSD 控制
+  // =========================
+  if (frame.can_id == 1021 && frame.can_dlc >= 8) {
+
+    uint8_t index = readMuxID(frame);
+
+    if (index == 0) {
+      FSDEnabled = isFSDSelectedInUI(frame);
+
+      if (FSDEnabled) {
         setBit(frame, 46, true);
         setBit(frame, 60, true);
         setBit(frame, 59, true);
         twaiSend(frame);
       }
-      if (index == 1) {
-        setBit(frame, 19, false);
-        setBit(frame, 47, true);
-        twaiSend(frame);
-      }
-      if (index == 2) {
-        frame.data[7] &= ~(0x07 << 4);
-        frame.data[7] |= (speedProfile & 0x07) << 4;
-        twaiSend(frame);
-      }
-      if (index == 0 && enablePrint) {
-        Serial.printf("HW4Handler: FSD: %d, profile: %d\n", FSDEnabled, speedProfile);
+
+      if (enablePrint) {
+        Serial.print("FSD: ");
+        Serial.print(FSDEnabled);
+        Serial.print(" profile: ");
+        Serial.println(speedProfile);
       }
     }
+
+    if (index == 1) {
+      setBit(frame, 19, false);
+      setBit(frame, 47, true);
+      twaiSend(frame);
+    }
+
+    if (index == 2) {
+      frame.data[7] &= ~(0x07 << 4);
+      frame.data[7] |= (speedProfile & 0x07) << 4;
+      twaiSend(frame);
+    }
+
+    return;
   }
 };
 
