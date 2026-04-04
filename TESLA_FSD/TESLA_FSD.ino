@@ -121,6 +121,8 @@ inline void setSpeedProfileV12V13(CanFrame& frame, int profile) {
 
 struct CarManagerBase {
   int  speedProfile = 1;
+  // 0|off, 1|+5, 2|+7, 3|+10, 4|+15
+  int  speedOffset = 0;
   bool FSDEnabled   = false;
   virtual void handelMessage(CanFrame& frame) = 0;
   virtual ~CarManagerBase() = default;
@@ -273,6 +275,8 @@ struct HW4Handler : public CarManagerBase {
         Serial.print(FSDEnabled);
         Serial.print(" profile: ");
         Serial.println(speedProfile);
+        Serial.print(" speedOffset: ");
+        Serial.println(speedOffset);
       }
     }
 
@@ -285,6 +289,14 @@ struct HW4Handler : public CarManagerBase {
     if (index == 2) {
       frame.data[7] &= ~(0x07 << 4);
       frame.data[7] |= (speedProfile & 0x07) << 4;
+      uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
+      if (fd == 6){
+        speedOffset = 1;
+      }else{
+        speedOffset = 0;
+      }
+      frame.data[0] |= (speedOffset & 0x03) << 6;
+      frame.data[1] |= (speedOffset >> 2);
       twaiSend(frame);
     }
 
