@@ -25,8 +25,11 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
+#include <WebSocketsServer.h>
+#include <ArduinoJson.h>
 
 WebServer server(80);
+WebSocketsServer ws(81);
 
 // ===== Web控制变量 =====
 bool webNagEnabled = true;   // 控制是否启用 Nag
@@ -159,7 +162,8 @@ void smartPrint(const String& msg) {
 // ============================================================
 // Handlers
 // ============================================================
-
+void printMergedLog();
+void sendWSData();
 struct CarManagerBase {
   int  speedProfile = 1;
   // 0|off, 1|+5, 2|+7, 3|+10, 4|+15
@@ -206,6 +210,7 @@ struct HW4Handler : public CarManagerBase {
       if (webPrintEnabled) {
         isaTriggered = true; 
       }
+      sendWSData();
     }
     return;
   }
@@ -315,6 +320,7 @@ struct HW4Handler : public CarManagerBase {
       if (webPrintEnabled) {
         printMergedLog();
       }
+      sendWSData();
     }
 
     if (index == 1) {
@@ -402,6 +408,34 @@ void handleUpdateUpload() {
   } 
   else if (upload.status == UPLOAD_FILE_END) {
     Update.end(true);
+  }
+}
+
+String lastWS = "";
+void sendWSData() {
+  if (!handler) return;
+
+  StaticJsonDocument<200> doc;
+
+  doc["fsd"] = handler->FSDEnabled;
+
+  // ✅ 文本（UI用）
+  doc["profile"] = getProfileText(handler->speedProfile);
+  doc["offset"]  = getSpeedOffsetText(handler->speedOffset);
+
+  // ✅ 数值（逻辑用）
+  doc["offsetval"] = handler->speedOffset;
+
+  // ✅ 状态
+  doc["nag"] = webNagEnabled;
+  doc["print"] = webPrintEnabled;
+
+  String json;
+  serializeJson(doc, json);
+
+  if (json != lastWS) {
+    ws.broadcastTXT(json);
+    lastWS = json;
   }
 }
 const char* htmlPage = R"rawliteral(
@@ -583,14 +617,8 @@ function refresh(){
     el('offset').innerText = d.offset;
   });
 }
-
-function toggleNag(){
- fetch('/toggleNag').then(refresh);
-}
-
 function setOffset(v){
- fetch('/setOffset?val=' + v)
-   .then(()=>refresh());
+  ws.send(JSON.stringify({cmd:"offset", val:v}));
 }
 function highlightOffset(val){
   for(let i=0;i<=4;i++){
@@ -600,11 +628,46 @@ function highlightOffset(val){
     }
   }
 }
+function toggleNag(){
+  ws.send(JSON.stringify({cmd:"nag"}));
+}
 function togglePrint(){
- fetch('/togglePrint').then(refresh);
+  ws.send(JSON.stringify({cmd:"print"}));
 }
 
-setInterval(refresh, 1000);
+function connectWS(){
+  let ws = new WebSocket("ws://" + location.hostname + ":81/");
+  ws.onopen = () => console.log("WS connected");
+  ws.onmessage = function(event) {
+    try {
+      let d = JSON.parse(event.data);
+
+      // 状态灯
+      setDot('fsdDot', d.fsd);
+      setDot('nagDot', d.nag);
+      setDot('printDot', d.print);
+
+      // 文本显示
+      el('profile').innerText = d.profile || '-';
+      el('offset').innerText = d.offset || '-';
+
+      // ✅ 高亮 offset 按钮（关键）
+      if (d.offsetval !== undefined) {
+        highlightOffset(d.offsetval);
+      }
+
+    } catch(e) {
+      console.error("WS JSON error", e);
+    }
+  };
+  ws.onclose = () => {
+    console.log("WS reconnect...");
+    setTimeout(connectWS, 1000);
+  };
+
+  return ws;
+}
+let ws = connectWS();
 refresh();
 </script>
 
@@ -640,6 +703,58 @@ void printMergedLog() {
 
   // 重置标记
   isaTriggered = false;
+}
+
+void onWsEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+
+    case WStype_CONNECTED:
+      Serial.printf("WS Client %u connected\n", num);
+      break;
+
+    case WStype_DISCONNECTED:
+      Serial.printf("WS Client %u disconnected\n", num);
+      break;
+
+    case WStype_TEXT: 
+    {
+      String msg = String((char*)payload);
+      Serial.println("WS recv: " + msg);
+
+      StaticJsonDocument<200> doc;
+      DeserializationError err = deserializeJson(doc, msg);
+
+      if (err) {
+        Serial.println("JSON parse failed");
+        return;
+      }
+
+      String cmd = doc["cmd"];
+
+      // ===== 设置 Offset =====
+      if (cmd == "offset") {
+        int val = doc["val"];
+        val = constrain(val, 0, 4);
+        handler->speedOffset = val;
+      }
+
+      // ===== 切换 Nag =====
+      else if (cmd == "nag") {
+        webNagEnabled = !webNagEnabled;
+      }
+
+      // ===== 切换 Print =====
+      else if (cmd == "print") {
+        webPrintEnabled = !webPrintEnabled;
+      }
+
+      // 👉 状态变化后立即推送
+      sendWSData();
+      break;
+    }
+    default:
+      break;
+  }
 }
 // ============================================================
 // Setup
@@ -694,7 +809,7 @@ void setup() {
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin("你的WiFi","密码");
+  WiFi.begin("你的WIFI","你的WIFI密码");
   while(WiFi.status()!=WL_CONNECTED) delay(500); 
   Serial.println(WiFi.localIP());
  
@@ -721,6 +836,9 @@ void setup() {
   }, handleUpdateUpload);
 
   server.begin();
+
+  ws.begin();
+  ws.onEvent(onWsEvent);
 }
 
 // ============================================================
@@ -729,6 +847,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  ws.loop();
   CanFrame frame;
   if (!twaiReceive(frame)) {
     digitalWrite(LED_PIN, HIGH);
