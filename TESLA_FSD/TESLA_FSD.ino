@@ -92,6 +92,8 @@ bool twaiReceive(CanFrame& frame) {
 // ============================================================
 
 inline void setBit(CanFrame& frame, int bit, bool value) {
+  if (bit < 0 || bit >= 64)
+    return; // bounds guard: CanFrame.data is 8 bytes
   int byteIndex = bit / 8;
   int bitIndex  = bit % 8;
   uint8_t mask = static_cast<uint8_t>(1U << bitIndex);
@@ -140,8 +142,10 @@ struct HW4Handler : public CarManagerBase {
   }
 
   // =========================
-  // 921 - ISA CHIME SUPPRESS
+  // 921 - ISA CHIME SUPPRESS 
+  // 抑制声音提示，仪表盘显示视觉指示器
   // =========================
+  // 务必注意限速规定。此功能仅抑制声音提示，视觉指示器仍然可见。驾驶时请勿仅依赖蜂鸣声来判断车速。
   if (frame.can_id == 921 && frame.can_dlc >= 8) {
 
     if (!(frame.data[1] & 0x20)) {
@@ -156,13 +160,12 @@ struct HW4Handler : public CarManagerBase {
       const uint16_t ID = 921;
       sum += (uint8_t)(ID & 0xFF);
       sum += (uint8_t)(ID >> 8);
-
-      frame.data[7] = sum;
-
+      
+      frame.data[7] = sum & 0xFF;
       twaiSend(frame);
 
       if (enablePrint) {
-        Serial.println("ISA SPEED CHIME SUPPRESS");
+        Serial.print("ISA SPEED CHIME SUPPRESS ");
       }
     }
     return;
@@ -202,12 +205,11 @@ struct HW4Handler : public CarManagerBase {
 
       echo.data[0] = frame.data[0];
       echo.data[1] = frame.data[1];
-      echo.data[2] = frame.data[2];
+      echo.data[2] = 0x08; // Keep flag bits, clear upper torque bits
       echo.data[5] = frame.data[5];
 
-      // ===== torque随机化 =====
-      uint8_t baseTorque = 0xB6;
-      echo.data[3] = baseTorque + random(-2, 3);
+      // Fixed torque = 1.80 Nm 
+      echo.data[3] = 0xB6;
 
       // handsOn = 1
       echo.data[4] = frame.data[4] | 0x40;
@@ -228,7 +230,7 @@ struct HW4Handler : public CarManagerBase {
       twaiSend(echo);
 
       if (enablePrint) {
-        Serial.print("Nag");
+        Serial.print("Nag ");
       }
     }
 
@@ -248,7 +250,7 @@ struct HW4Handler : public CarManagerBase {
       case 3: speedProfile = 1; break;
       case 4: speedProfile = 0; break;
       case 5: speedProfile = 4; break;
-      case 6: speedOffset = 1; break;
+      case 6: speedOffset = 1;speedProfile = 3; break;
     }
 
     return;
@@ -262,12 +264,12 @@ struct HW4Handler : public CarManagerBase {
     uint8_t index = readMuxID(frame);
 
     if (index == 0) {
-      FSDEnabled = isFSDSelectedInUI(frame);
+      FSDEnabled = isFSDSelectedInUI(frame);//读取FSD状态，默认使用仅当在车辆设置中启用“交通信号灯和停车标志控制”时，FSD 才会激活
 
       if (FSDEnabled) {
-        setBit(frame, 46, true);
-        setBit(frame, 60, true);
-        setBit(frame, 59, true);
+        setBit(frame, 46, true);//启用FSD
+        setBit(frame, 60, true);//启用 V14
+        setBit(frame, 59, true);//启用检测紧急车辆
         twaiSend(frame);
       }
 
@@ -282,14 +284,15 @@ struct HW4Handler : public CarManagerBase {
     }
 
     if (index == 1) {
-      setBit(frame, 19, false);
-      setBit(frame, 47, true);
+      //驾驶时请始终双手放在方向盘上，并保持注意力集中。此功能仅用于测试目的。您始终对车辆安全驾驶负有责任。
+      setBit(frame, 19, false);//UI_applyEceR79 清除“双手放在方向盘上”的提示音，抑制周期性的“对方向盘施加压力”警告
+      setBit(frame, 47, true);//ASS 不受欧盟监管限制的智能召唤功能
       twaiSend(frame);
     }
 
     if (index == 2) {
-      frame.data[7] &= ~(0x07 << 4);
-      frame.data[7] |= (speedProfile & 0x07) << 4;
+      frame.data[7] &= ~(0x07 << 4); 
+      frame.data[7] |= (speedProfile & 0x07) << 4; //速度配置文件
       frame.data[0] |= (speedOffset & 0x03) << 6;
       frame.data[1] |= (speedOffset >> 2);
       twaiSend(frame);
