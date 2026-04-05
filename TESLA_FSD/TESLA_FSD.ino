@@ -693,10 +693,18 @@ void setup() {
 
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
-  WiFi.begin("你的WIFI","WIFI密码");
-  while(WiFi.status()!=WL_CONNECTED) delay(500);
-
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin("你的WiFi","密码");
+  while(WiFi.status()!=WL_CONNECTED) delay(500); 
   Serial.println(WiFi.localIP());
+ 
+  IPAddress IP(192,168,4,1);
+  IPAddress gateway(192,168,4,1);
+  IPAddress subnet(255,255,255,0);
+  WiFi.softAPConfig(IP, gateway, subnet);
+  WiFi.softAP("Tesla-FSD-TOOL", "1234mima");
+  Serial.println("AP Started");
+  Serial.println(WiFi.softAPIP());
 
   server.on("/", [](){
     server.send(200,"text/html",htmlPage);
