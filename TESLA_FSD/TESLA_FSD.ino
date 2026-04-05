@@ -60,10 +60,13 @@ WebSocketsServer ws(81);
 // ===== Web控制变量 =====
 bool webNagEnabled = true;   // 控制是否启用 Nag
 bool webPrintEnabled = true; // 控制串口输出
-String lastLog = ""; 
 bool isaTriggered = false;   // 本轮是否触发 ISA
 bool otaRunning = false;
+int  speedProfile = 1;
+int  speedOffset = 0;
 
+String lastLog = ""; 
+String lastWS = "";
 String savedSSID;
 String savedPASS;
 
@@ -170,15 +173,28 @@ void smartPrint(const String& msg) {
   }
 }
 
-void loadWiFi() {
-  prefs.begin("wifi", true);
+void loadConfig() {
+  prefs.begin("config", true);
   savedSSID = prefs.getString("ssid", "");
   savedPASS = prefs.getString("pass", "");
+  webNagEnabled   = prefs.getBool("nag", true);
+  webPrintEnabled = prefs.getBool("print", true);
+  speedOffset     = prefs.getInt("offset", 0);
+  speedProfile    = prefs.getInt("profile", 1);
   prefs.end();
 }
+void saveConfig() {
+  prefs.begin("config", false); // 可写
 
+  prefs.putBool("nag", webNagEnabled);
+  prefs.putBool("print", webPrintEnabled);
+  prefs.putInt("offset", speedOffset);
+  prefs.putInt("profile", speedProfile);
+
+  prefs.end();
+}
 void saveWiFi(String ssid, String pass) {
-  prefs.begin("wifi", false);
+  prefs.begin("config", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
   prefs.end();
@@ -189,9 +205,6 @@ void saveWiFi(String ssid, String pass) {
 void printMergedLog();
 void sendWSData();
 struct CarManagerBase {
-  int  speedProfile = 1;
-  // 0|off, 1|+5, 2|+7, 3|+10, 4|+15
-  int  speedOffset = 0;
   bool FSDEnabled   = false;
   virtual void handelMessage(CanFrame& frame) = 0;
   virtual ~CarManagerBase() = default;
@@ -231,8 +244,9 @@ struct HW4Handler : public CarManagerBase {
       frame.data[7] = sum & 0xFF;
       twaiSend(frame);
 
+      isaTriggered = true; 
       if (webPrintEnabled) {
-        isaTriggered = true; 
+        printMergedLog();
       }
       sendWSData();
     }
@@ -384,9 +398,9 @@ void handleData() {
 
   String json = "{";
   json += "\"fsd\":" + String(h->FSDEnabled ? "true":"false") + ",";
-  json += "\"profile\":\"" + String(getProfileText(h->speedProfile)) + "\",";
-  json += "\"offset\":\"" + String(getSpeedOffsetText(h->speedOffset)) + "\",";
-  json += "\"offsetval\":" + String(h->speedOffset) + ",";
+  json += "\"profile\":\"" + String(getProfileText(speedProfile)) + "\",";
+  json += "\"offset\":\"" + String(getSpeedOffsetText(speedOffset)) + "\",";
+  json += "\"offsetval\":" + String(speedOffset) + ",";
   json += "\"nag\":" + String(webNagEnabled ? "true":"false") + ",";
   json += "\"print\":" + String(webPrintEnabled ? "true":"false") + ",";
   json += "\"version\":\"" + String(FW_VERSION) + "\",";
@@ -414,8 +428,7 @@ void handleSetOffset() {
 
   // 限制范围
   val = constrain(val, 0, 4);
-
-  handler->speedOffset = val;
+  speedOffset = val;
 
   server.send(200, "text/plain", "OK");
 }
@@ -476,7 +489,7 @@ void handleSaveWifi() {
   delay(1000);
   ESP.restart();
 }
-String lastWS = "";
+
 void sendWSData() {
   if (!handler) return;
 
@@ -485,11 +498,11 @@ void sendWSData() {
   doc["fsd"] = handler->FSDEnabled;
 
   // ✅ 文本（UI用）
-  doc["profile"] = getProfileText(handler->speedProfile);
-  doc["offset"]  = getSpeedOffsetText(handler->speedOffset);
+  doc["profile"] = getProfileText(speedProfile);
+  doc["offset"]  = getSpeedOffsetText(speedOffset);
 
   // ✅ 数值（逻辑用）
-  doc["offsetval"] = handler->speedOffset;
+  doc["offsetval"] = speedOffset;
 
   // ✅ 状态
   doc["nag"] = webNagEnabled;
@@ -501,9 +514,12 @@ void sendWSData() {
   serializeJson(doc, json);
 
   if (json != lastWS) {
+    Serial.println("WS broadcastT:\n" +  json);
     ws.broadcastTXT(json);
     lastWS = json;
+    saveConfig();
   }
+
 }
 const char* htmlPage = R"rawliteral(
 <!DOCTYPE html>
@@ -768,7 +784,7 @@ function connectWS(){
   return ws;
 }
 let ws = connectWS();
-refresh();
+//refresh();
 </script>
 
 </body>
@@ -844,10 +860,10 @@ void printMergedLog() {
   msg += (h->FSDEnabled ? "ON" : "OFF");
 
   msg += " | Profile: ";
-  msg += getProfileText(h->speedProfile);
+  msg += getProfileText(speedProfile);
 
   msg += " | Offset: ";
-  msg += getSpeedOffsetText(h->speedOffset);
+  msg += getSpeedOffsetText(speedOffset);
 
   // 去重
   if (msg != lastLog) {
@@ -855,14 +871,14 @@ void printMergedLog() {
     lastLog = msg;
   }
 
-  // 重置标记
-  isaTriggered = false;
 }
 
 void onWsEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   switch(type) {
 
-    case WStype_CONNECTED:
+    case WStype_CONNECTED: 
+      lastWS = "";
+      sendWSData();
       Serial.printf("WS Client %u connected\n", num);
       break;
 
@@ -889,7 +905,7 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
       if (cmd == "offset") {
         int val = doc["val"];
         val = constrain(val, 0, 4);
-        handler->speedOffset = val;
+        speedOffset = val;
       }
 
       // ===== 切换 Nag =====
@@ -962,7 +978,7 @@ void setup() {
 
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
-  loadWiFi();
+  loadConfig();
   WiFi.mode(WIFI_AP_STA);
   IPAddress IP(192,168,4,1);
   IPAddress gateway(192,168,4,1);
@@ -980,6 +996,7 @@ void setup() {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("WIFI CONNECTED");
       Serial.println(WiFi.localIP());
     }
   }
