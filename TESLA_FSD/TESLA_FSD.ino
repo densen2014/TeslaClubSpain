@@ -388,8 +388,8 @@ void handleData() {
   json += "\"offset\":\"" + String(getSpeedOffsetText(h->speedOffset)) + "\",";
   json += "\"offsetval\":" + String(h->speedOffset) + ",";
   json += "\"nag\":" + String(webNagEnabled ? "true":"false") + ",";
-  json += "\"print\":" + String(webPrintEnabled ? "true":"false");
-  json += "\"version\":\"" + String(FW_VERSION) + "\"";
+  json += "\"print\":" + String(webPrintEnabled ? "true":"false") + ",";
+  json += "\"version\":\"" + String(FW_VERSION) + "\",";
   json += "\"build\":\"" + String(BUILD_TIME) + "\"";
   json += "}";
 
@@ -466,6 +466,10 @@ void handleSaveWifi() {
   String ssid = doc["ssid"];
   String pass = doc["pass"];
 
+  if (ssid.length() == 0) {
+    server.send(400, "text/plain", "SSID empty");
+    return;
+  }
   saveWiFi(ssid, pass);
 
   server.send(200, "text/plain", "Saved! Rebooting...");
@@ -643,15 +647,10 @@ input {
 <div class="card">
   <h3>Function</h3>
   <div class="row">
-    <button onclick="toggleNag()">切换 Nag</button>
-    <button onclick="togglePrint()">切换打印</button>
+    <button onclick="toggleNag()">Nag</button>
+    <button onclick="togglePrint()">SerialLog</button>
+    <button onclick="location.href='/config'">Config</button>
   </div>
-</div>
-
-
-<div style="margin:3px; font-size:8px; color:#888;">
-  Firmware: <span id="version">-</span> 
-  Build: <span id="build"></span>
 </div>
 
 <div class="card">
@@ -663,6 +662,11 @@ input {
 
 <br/>
 <div id="progress">0%</div>
+</div>
+
+<div style="margin:3px; font-size:12px; color:#888;">
+  Firmware: <span id="version">-</span> 
+  Build: <span id="build"></span>
 </div>
 
 </div>
@@ -960,11 +964,6 @@ void setup() {
 
   loadWiFi();
   WiFi.mode(WIFI_AP_STA);
-  if (savedSSID.length() > 0) {
-    WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
-    while(WiFi.status()!=WL_CONNECTED) delay(500); 
-    Serial.println(WiFi.localIP());
-  }
   IPAddress IP(192,168,4,1);
   IPAddress gateway(192,168,4,1);
   IPAddress subnet(255,255,255,0);
@@ -973,6 +972,18 @@ void setup() {
   Serial.println("AP Started");
   Serial.println(WiFi.softAPIP());
   
+  if (savedSSID.length() > 0) {
+    WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 2000) {
+      delay(500);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println(WiFi.localIP());
+    }
+  }
+
   server.on("/", [](){
     if (savedSSID.length() > 0) {
       server.send(200,"text/html",htmlPage);
