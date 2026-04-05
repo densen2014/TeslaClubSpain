@@ -283,7 +283,6 @@ struct HW4Handler : public CarManagerBase {
   if (frame.can_id == 1016 && frame.can_dlc >= 6) {
 
     uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
-    speedOffset = 0;
     switch (fd) {
       case 1: speedProfile = 3; break;
       case 2: speedProfile = 2; break;
@@ -357,6 +356,7 @@ void handleData() {
   json += "\"fsd\":" + String(h->FSDEnabled ? "true":"false") + ",";
   json += "\"profile\":\"" + String(getProfileText(h->speedProfile)) + "\",";
   json += "\"offset\":\"" + String(getSpeedOffsetText(h->speedOffset)) + "\",";
+  json += "\"offsetval\":" + String(h->speedOffset) + ",";
   json += "\"nag\":" + String(webNagEnabled ? "true":"false") + ",";
   json += "\"print\":" + String(webPrintEnabled ? "true":"false");
   json += "}";
@@ -367,7 +367,26 @@ void handleToggleNag() {
   webNagEnabled = !webNagEnabled;
   server.send(200, "text/plain", webNagEnabled ? "ON":"OFF");
 }
+void handleSetOffset() {
+  if (!handler) {
+    server.send(500, "text/plain", "handler null");
+    return;
+  }
 
+  if (!server.hasArg("val")) {
+    server.send(400, "text/plain", "missing val");
+    return;
+  }
+
+  int val = server.arg("val").toInt();
+
+  // 限制范围
+  val = constrain(val, 0, 4);
+
+  handler->speedOffset = val;
+
+  server.send(200, "text/plain", "OK");
+}
 void handleTogglePrint() {
   webPrintEnabled = !webPrintEnabled;
   server.send(200, "text/plain", webPrintEnabled ? "ON":"OFF");
@@ -467,6 +486,15 @@ button:active {
 input {
   margin-top:10px;
 }
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.row button {
+  flex: 1;
+}
 </style>
 </head>
 
@@ -478,34 +506,49 @@ input {
 
 <div class="card">
 
-<div class="status">
-  <span>FSD</span>
-  <div id="fsdDot" class="dot"></div>
+  <div class="status">
+    <span>FSD</span>
+    <div id="fsdDot" class="dot"></div>
+  </div>
+
+  <div class="status">
+    <span>Nag Killer</span>
+    <div id="nagDot" class="dot"></div>
+  </div>
+
+  <div class="status">
+    <span>Serial Print</span>
+    <div id="printDot" class="dot"></div>
+  </div>
+
+  <div class="status">
+    <span>Profile</span>
+    <span id="profile" class="value">-</span>
+  </div>
+
+  <div class="status">
+    <span>Offset</span>
+    <span id="offset" class="value">-</span>
+  </div>
 </div>
 
-<div class="status">
-  <span>Nag Killer</span>
-  <div id="nagDot" class="dot"></div>
+<div class="card">
+  <h3>Speed Offset (km/h)</h3>
+  <div class="row">
+    <button id="off0" onclick="setOffset(0)">Off</button>
+    <button id="off1" onclick="setOffset(1)">+5</button>
+    <button id="off2" onclick="setOffset(2)">+7</button>
+    <button id="off3" onclick="setOffset(3)">+10</button>
+    <button id="off4" onclick="setOffset(4)">+15</button> 
+  </div>
 </div>
 
-<div class="status">
-  <span>Serial Print</span>
-  <div id="printDot" class="dot"></div>
-</div>
-
-<div class="status">
-  <span>Profile</span>
-  <span id="profile" class="value">-</span>
-</div>
-
-<div class="status">
-  <span>Offset</span>
-  <span id="offset" class="value">-</span>
-</div>
-
-<button onclick="toggleNag()">切换 Nag</button>
-<button onclick="togglePrint()">切换打印</button>
-
+<div class="card">
+  <h3>Function</h3>
+  <div class="row">
+    <button onclick="toggleNag()">切换 Nag</button>
+    <button onclick="togglePrint()">切换打印</button>
+  </div>
 </div>
 
 <div class="card">
@@ -535,7 +578,7 @@ function refresh(){
     setDot('fsdDot', d.fsd);
     setDot('nagDot', d.nag);
     setDot('printDot', d.print);
-
+    highlightOffset(d.offsetval);
     el('profile').innerText = d.profile;
     el('offset').innerText = d.offset;
   });
@@ -545,6 +588,18 @@ function toggleNag(){
  fetch('/toggleNag').then(refresh);
 }
 
+function setOffset(v){
+ fetch('/setOffset?val=' + v)
+   .then(()=>refresh());
+}
+function highlightOffset(val){
+  for(let i=0;i<=4;i++){
+    let b = document.getElementById('off'+i);
+    if(b){
+      b.style.background = (i==val) ? "#00ff88" : "#222";
+    }
+  }
+}
 function togglePrint(){
  fetch('/togglePrint').then(refresh);
 }
@@ -575,8 +630,7 @@ void printMergedLog() {
   msg += getProfileText(h->speedProfile);
 
   msg += " | Offset: ";
-  msg += (h->speedOffset > 0 ? "+" : "");
-  msg += String(h->speedOffset);
+  msg += getSpeedOffsetText(h->speedOffset);
 
   // 去重
   if (msg != lastLog) {
@@ -639,7 +693,7 @@ void setup() {
 
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
-  WiFi.begin("你的wifi","你的密码");
+  WiFi.begin("你的WIFI","WIFI密码");
   while(WiFi.status()!=WL_CONNECTED) delay(500);
 
   Serial.println(WiFi.localIP());
@@ -651,6 +705,7 @@ void setup() {
   server.on("/data", handleData);
   server.on("/toggleNag", handleToggleNag);
   server.on("/togglePrint", handleTogglePrint);
+  server.on("/setOffset", handleSetOffset);
 
   server.on("/update", HTTP_POST, [](){
     server.send(200,"text/plain","OK");
