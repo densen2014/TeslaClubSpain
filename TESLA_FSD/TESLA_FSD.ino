@@ -514,7 +514,7 @@ void sendWSData() {
   serializeJson(doc, json);
 
   if (json != lastWS) {
-    Serial.println("WS broadcastT:\n" +  json);
+    //Serial.println("WS broadcastT:\n" +  json);
     ws.broadcastTXT(json);
     lastWS = json;
     saveConfig();
