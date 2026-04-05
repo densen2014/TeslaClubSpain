@@ -29,7 +29,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#define FW_VERSION "0.0.3"
+#define FW_VERSION "0.0.4-beta"
 #define BUILD_TIME __DATE__ " " __TIME__ 
 
 // ============================================================
