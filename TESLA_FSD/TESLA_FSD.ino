@@ -241,13 +241,14 @@ struct HW4Handler : public CarManagerBase {
   if (frame.can_id == 1016 && frame.can_dlc >= 6) {
 
     uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
-
+    speedOffset = 0;
     switch (fd) {
       case 1: speedProfile = 3; break;
       case 2: speedProfile = 2; break;
       case 3: speedProfile = 1; break;
       case 4: speedProfile = 0; break;
       case 5: speedProfile = 4; break;
+      case 6: speedOffset = 1; break;
     }
 
     return;
@@ -274,7 +275,7 @@ struct HW4Handler : public CarManagerBase {
         Serial.print("FSD: ");
         Serial.print(FSDEnabled);
         Serial.print(" profile: ");
-        Serial.println(speedProfile);
+        Serial.print(speedProfile);
         Serial.print(" speedOffset: ");
         Serial.println(speedOffset);
       }
@@ -289,12 +290,6 @@ struct HW4Handler : public CarManagerBase {
     if (index == 2) {
       frame.data[7] &= ~(0x07 << 4);
       frame.data[7] |= (speedProfile & 0x07) << 4;
-      uint8_t fd = (frame.data[5] & 0b11100000) >> 5;
-      if (fd == 6){
-        speedOffset = 1;
-      }else{
-        speedOffset = 0;
-      }
       frame.data[0] |= (speedOffset & 0x03) << 6;
       frame.data[1] |= (speedOffset >> 2);
       twaiSend(frame);
