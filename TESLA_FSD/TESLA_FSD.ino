@@ -22,7 +22,17 @@
 #include <memory>
 #include <algorithm>
 #include "driver/twai.h"
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Update.h>
 
+WebServer server(80);
+
+// ===== Web控制变量 =====
+bool webNagEnabled = true;   // 控制是否启用 Nag
+bool webPrintEnabled = true; // 控制串口输出
+String lastLog = ""; 
+bool isaTriggered = false;   // 本轮是否触发 ISA
 // ============================================================
 // Hardware configuration
 // ============================================================
@@ -43,8 +53,6 @@
 
 #define HW4    HW4Handler  
 #define HW HW4
-
-bool enablePrint = true;
 
 // ============================================================
 // TWAI wrapper — sends a CAN frame
@@ -116,7 +124,38 @@ inline void setSpeedProfileV12V13(CanFrame& frame, int profile) {
   frame.data[6] &= ~0x06;
   frame.data[6] |= (profile << 1);
 }
+const char* getProfileText(int profile) {
+  switch(profile) {
+    case 3: return "Max";
+    case 2: return "Hurry";
+    case 1: return "Normal";
+    case 0: return "Chill";
+    case 4: return "Sloth";
+    default: return "Unknown";
+  }
+}
+// 0|off, 1|+5, 2|+7, 3|+10, 4|+15
+const char* getSpeedOffsetText(int offset) {
+  switch(offset) {
+    case 0: return "Off";
+    case 1: return "+5km/h";
+    case 2: return "+7km/h";
+    case 3: return "+10km/h";
+    case 4: return "+15km/h";
+    default: return "Unknown";
+  }
+}
+unsigned long lastPrintTime = 0;
 
+void smartPrint(const String& msg) {
+  unsigned long now = millis();
+
+  if (msg != lastLog || now - lastPrintTime > 1000) {
+    Serial.println(msg);
+    lastLog = msg;
+    lastPrintTime = now;
+  }
+}
 // ============================================================
 // Handlers
 // ============================================================
@@ -164,8 +203,8 @@ struct HW4Handler : public CarManagerBase {
       frame.data[7] = sum & 0xFF;
       twaiSend(frame);
 
-      if (enablePrint) {
-        Serial.print("ISA SPEED CHIME SUPPRESS ");
+      if (webPrintEnabled) {
+        isaTriggered = true; 
       }
     }
     return;
@@ -183,7 +222,8 @@ struct HW4Handler : public CarManagerBase {
 
     uint8_t handsOn = (frame.data[4] >> 6) & 0x03;
 
-    if (handsOn == 0) {
+    if (handsOn == 0 && webNagEnabled)
+    {
       // ===== 防检测控制 =====
       static uint32_t lastSend = 0;
 
@@ -229,8 +269,8 @@ struct HW4Handler : public CarManagerBase {
 
       twaiSend(echo);
 
-      if (enablePrint) {
-        Serial.print("Nag ");
+      if (webPrintEnabled) {
+        smartPrint("Nag ");
       }
     }
 
@@ -273,13 +313,8 @@ struct HW4Handler : public CarManagerBase {
         twaiSend(frame);
       }
 
-      if (enablePrint) {
-        Serial.print("FSD: ");
-        Serial.print(FSDEnabled);
-        Serial.print(" profile: ");
-        Serial.print(speedProfile);
-        Serial.print(" speedOffset: ");
-        Serial.println(speedOffset);
+      if (webPrintEnabled) {
+        printMergedLog();
       }
     }
 
@@ -309,6 +344,249 @@ struct HW4Handler : public CarManagerBase {
 
 std::unique_ptr<CarManagerBase> handler;
 
+
+void handleData() {
+  if (!handler) {
+    server.send(500, "text/plain", "handler null");
+    return;
+  }
+
+  HW4Handler* h = static_cast<HW4Handler*>(handler.get());
+
+  String json = "{";
+  json += "\"fsd\":" + String(h->FSDEnabled ? "true":"false") + ",";
+  json += "\"profile\":\"" + String(getProfileText(h->speedProfile)) + "\",";
+  json += "\"offset\":\"" + String(getSpeedOffsetText(h->speedOffset)) + "\",";
+  json += "\"nag\":" + String(webNagEnabled ? "true":"false") + ",";
+  json += "\"print\":" + String(webPrintEnabled ? "true":"false");
+  json += "}";
+
+  server.send(200, "application/json", json);
+}
+void handleToggleNag() {
+  webNagEnabled = !webNagEnabled;
+  server.send(200, "text/plain", webNagEnabled ? "ON":"OFF");
+}
+
+void handleTogglePrint() {
+  webPrintEnabled = !webPrintEnabled;
+  server.send(200, "text/plain", webPrintEnabled ? "ON":"OFF");
+}
+void handleUpdateUpload() {
+  HTTPUpload& upload = server.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    Update.begin(UPDATE_SIZE_UNKNOWN);
+  } 
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    Update.write(upload.buf, upload.currentSize);
+  } 
+  else if (upload.status == UPLOAD_FILE_END) {
+    Update.end(true);
+  }
+}
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tesla FSD Panel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body {
+  margin:0;
+  font-family: -apple-system, BlinkMacSystemFont;
+  background: #0b0b0b;
+  color: #fff;
+  text-align:center;
+}
+
+h2 {
+  margin-top:20px;
+}
+
+.container {
+  padding:20px;
+}
+
+.card {
+  background:#151515;
+  border-radius:16px;
+  padding:20px;
+  margin:10px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+.status {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin:12px 0;
+  font-size:18px;
+}
+
+.dot {
+  width:14px;
+  height:14px;
+  border-radius:50%;
+  background:#444;
+  box-shadow:0 0 5px #000;
+}
+
+.on {
+  background:#00ff88;
+  box-shadow:0 0 10px #00ff88;
+}
+
+.off {
+  background:#ff4444;
+  box-shadow:0 0 10px #ff4444;
+}
+
+button {
+  width:100%;
+  padding:14px;
+  margin-top:10px;
+  border:none;
+  border-radius:12px;
+  font-size:16px;
+  background:#222;
+  color:#fff;
+}
+
+button:active {
+  background:#333;
+}
+
+.value {
+  font-weight:bold;
+  color:#0af;
+}
+
+input {
+  margin-top:10px;
+}
+</style>
+</head>
+
+<body>
+
+<h2>🚗 FSD Control Panel</h2>
+
+<div class="container">
+
+<div class="card">
+
+<div class="status">
+  <span>FSD</span>
+  <div id="fsdDot" class="dot"></div>
+</div>
+
+<div class="status">
+  <span>Nag Killer</span>
+  <div id="nagDot" class="dot"></div>
+</div>
+
+<div class="status">
+  <span>Serial Print</span>
+  <div id="printDot" class="dot"></div>
+</div>
+
+<div class="status">
+  <span>Profile</span>
+  <span id="profile" class="value">-</span>
+</div>
+
+<div class="status">
+  <span>Offset</span>
+  <span id="offset" class="value">-</span>
+</div>
+
+<button onclick="toggleNag()">切换 Nag</button>
+<button onclick="togglePrint()">切换打印</button>
+
+</div>
+
+<div class="card">
+<h3>OTA 升级</h3>
+<form method="POST" action="/update" enctype="multipart/form-data">
+<input type="file" name="update">
+<br>
+<button type="submit">上传固件</button>
+</form>
+</div>
+
+</div>
+
+<script>
+const el = id => document.getElementById(id);
+
+function setDot(id, state){
+  let d = el(id);
+  d.classList.remove('on','off');
+  d.classList.add(state ? 'on' : 'off');
+}
+
+function refresh(){
+ fetch('/data')
+  .then(r=>r.json())
+  .then(d=>{
+    setDot('fsdDot', d.fsd);
+    setDot('nagDot', d.nag);
+    setDot('printDot', d.print);
+
+    el('profile').innerText = d.profile;
+    el('offset').innerText = d.offset;
+  });
+}
+
+function toggleNag(){
+ fetch('/toggleNag').then(refresh);
+}
+
+function togglePrint(){
+ fetch('/togglePrint').then(refresh);
+}
+
+setInterval(refresh, 1000);
+refresh();
+</script>
+
+</body>
+</html>
+)rawliteral";
+
+void printMergedLog() {
+  if (!webPrintEnabled) return;
+
+  HW4Handler* h = static_cast<HW4Handler*>(handler.get());
+
+  String msg = "";
+
+  if (isaTriggered) {
+    msg += "[ISA] ";
+  }
+
+  msg += "FSD: ";
+  msg += (h->FSDEnabled ? "ON" : "OFF");
+
+  msg += " | Profile: ";
+  msg += getProfileText(h->speedProfile);
+
+  msg += " | Offset: ";
+  msg += (h->speedOffset > 0 ? "+" : "");
+  msg += String(h->speedOffset);
+
+  // 去重
+  if (msg != lastLog) {
+    Serial.println(msg);
+    lastLog = msg;
+  }
+
+  // 重置标记
+  isaTriggered = false;
+}
 // ============================================================
 // Setup
 // ============================================================
@@ -360,6 +638,26 @@ void setup() {
   }
 
   Serial.println("TWAI ready @ 500kbps (native CAN)");
+
+  WiFi.begin("你的wifi","你的密码");
+  while(WiFi.status()!=WL_CONNECTED) delay(500);
+
+  Serial.println(WiFi.localIP());
+
+  server.on("/", [](){
+    server.send(200,"text/html",htmlPage);
+  });
+
+  server.on("/data", handleData);
+  server.on("/toggleNag", handleToggleNag);
+  server.on("/togglePrint", handleTogglePrint);
+
+  server.on("/update", HTTP_POST, [](){
+    server.send(200,"text/plain","OK");
+    ESP.restart();
+  }, handleUpdateUpload);
+
+  server.begin();
 }
 
 // ============================================================
@@ -367,6 +665,7 @@ void setup() {
 // ============================================================
 
 void loop() {
+  server.handleClient();
   CanFrame frame;
   if (!twaiReceive(frame)) {
     digitalWrite(LED_PIN, HIGH);
