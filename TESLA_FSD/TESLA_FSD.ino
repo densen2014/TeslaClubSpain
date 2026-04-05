@@ -288,7 +288,7 @@ struct HW4Handler : public CarManagerBase {
 
       echo.data[0] = frame.data[0];
       echo.data[1] = frame.data[1];
-      echo.data[2] = 0x08; // Keep flag bits, clear upper torque bits
+      echo.data[2] = (frame.data[2] & 0xF0) | 0x08;
       echo.data[5] = frame.data[5];
 
       // Fixed torque = 1.80 Nm 
@@ -371,8 +371,8 @@ struct HW4Handler : public CarManagerBase {
     if (index == 2) {
       frame.data[7] &= ~(0x07 << 4); 
       frame.data[7] |= (speedProfile & 0x07) << 4; //速度配置文件
-      frame.data[0] |= (speedOffset & 0x03) << 6;
-      frame.data[1] |= (speedOffset >> 2);
+      //frame.data[0] |= (speedOffset & 0x03) << 6; //HW3 only
+      //frame.data[1] |= (speedOffset >> 2); //HW3 only
       twaiSend(frame);
     }
 
