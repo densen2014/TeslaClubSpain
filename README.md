@@ -45,3 +45,23 @@ FSD 是一项高级功能，必须购买或订阅才能使用。
 | 1021 | UI_autopilotControl | R+W | 1 | 19 | 0 | UI_applyEceR79 | suppress nag |
 | 1021 | UI_autopilotControl | R+W | 1 | 47 | 1 | UI_hardCoreSummon | enable summon |
 | 1021 | UI_autopilotControl | R+W | 2 | 60–62 | (0–4) | | inject profile |
+
+#### 功能
+
+✅ Web 控制台
+✅ WebSocket 实时同步
+✅ OTA 升级
+✅ WiFi 配网
+
+#### 首次使用
+
+烧录至ESP32后，手机等设备连接设备AP
+
+SSID：
+Tesla-FSD-TOOL
+密码：
+1234mima
+IP：
+192.168.4.1
+
+设置连接家里wifi用于查看web页面或者ota
