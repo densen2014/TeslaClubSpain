@@ -27,15 +27,11 @@
 #include <Update.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
-WebServer server(80);
-WebSocketsServer ws(81);
+#define FW_VERSION "0.0.3"
+#define BUILD_TIME __DATE__ " " __TIME__ 
 
-// ===== Web控制变量 =====
-bool webNagEnabled = true;   // 控制是否启用 Nag
-bool webPrintEnabled = true; // 控制串口输出
-String lastLog = ""; 
-bool isaTriggered = false;   // 本轮是否触发 ISA
 // ============================================================
 // Hardware configuration
 // ============================================================
@@ -55,7 +51,21 @@ bool isaTriggered = false;   // 本轮是否触发 ISA
 
 
 #define HW4    HW4Handler  
-#define HW HW4
+#define HW HW4 
+
+Preferences prefs;
+WebServer server(80);
+WebSocketsServer ws(81);
+
+// ===== Web控制变量 =====
+bool webNagEnabled = true;   // 控制是否启用 Nag
+bool webPrintEnabled = true; // 控制串口输出
+String lastLog = ""; 
+bool isaTriggered = false;   // 本轮是否触发 ISA
+bool otaRunning = false;
+
+String savedSSID;
+String savedPASS;
 
 // ============================================================
 // TWAI wrapper — sends a CAN frame
@@ -158,6 +168,20 @@ void smartPrint(const String& msg) {
     lastLog = msg;
     lastPrintTime = now;
   }
+}
+
+void loadWiFi() {
+  prefs.begin("wifi", true);
+  savedSSID = prefs.getString("ssid", "");
+  savedPASS = prefs.getString("pass", "");
+  prefs.end();
+}
+
+void saveWiFi(String ssid, String pass) {
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
 }
 // ============================================================
 // Handlers
@@ -365,6 +389,8 @@ void handleData() {
   json += "\"offsetval\":" + String(h->speedOffset) + ",";
   json += "\"nag\":" + String(webNagEnabled ? "true":"false") + ",";
   json += "\"print\":" + String(webPrintEnabled ? "true":"false");
+  json += "\"version\":\"" + String(FW_VERSION) + "\"";
+  json += "\"build\":\"" + String(BUILD_TIME) + "\"";
   json += "}";
 
   server.send(200, "application/json", json);
@@ -401,16 +427,51 @@ void handleUpdateUpload() {
   HTTPUpload& upload = server.upload();
 
   if (upload.status == UPLOAD_FILE_START) {
-    Update.begin(UPDATE_SIZE_UNKNOWN);
+    otaRunning = true;
+    Serial.println("OTA Start");
+
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+
   } 
   else if (upload.status == UPLOAD_FILE_WRITE) {
-    Update.write(upload.buf, upload.currentSize);
+
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+
   } 
   else if (upload.status == UPLOAD_FILE_END) {
-    Update.end(true);
+
+    if (Update.end(true)) {
+      Serial.println("OTA Success");
+    } else {
+      Update.printError(Serial);
+    }
   }
 }
+void handleSaveWifi() {
 
+  if (!server.hasArg("plain")) {
+    server.send(400, "text/plain", "No Data");
+    return;
+  }
+
+  String body = server.arg("plain");
+
+  StaticJsonDocument<200> doc;
+  deserializeJson(doc, body);
+
+  String ssid = doc["ssid"];
+  String pass = doc["pass"];
+
+  saveWiFi(ssid, pass);
+
+  server.send(200, "text/plain", "Saved! Rebooting...");
+  delay(1000);
+  ESP.restart();
+}
 String lastWS = "";
 void sendWSData() {
   if (!handler) return;
@@ -429,6 +490,8 @@ void sendWSData() {
   // ✅ 状态
   doc["nag"] = webNagEnabled;
   doc["print"] = webPrintEnabled;
+  doc["version"] = FW_VERSION;
+  doc["build"] = BUILD_TIME;
 
   String json;
   serializeJson(doc, json);
@@ -585,13 +648,21 @@ input {
   </div>
 </div>
 
+
+<div style="margin:3px; font-size:8px; color:#888;">
+  Firmware: <span id="version">-</span> 
+  Build: <span id="build"></span>
+</div>
+
 <div class="card">
 <h3>OTA 升级</h3>
-<form method="POST" action="/update" enctype="multipart/form-data">
-<input type="file" name="update">
-<br>
-<button type="submit">上传固件</button>
+<form id="otaForm">
+<input type="file" id="file">
+<button type="button" onclick="upload()">上传固件</button>
 </form>
+
+<br/>
+<div id="progress">0%</div>
 </div>
 
 </div>
@@ -615,6 +686,8 @@ function refresh(){
     highlightOffset(d.offsetval);
     el('profile').innerText = d.profile;
     el('offset').innerText = d.offset;
+    el('version').innerText = d.version || '-';
+    el('build').innerText = d.build;
   });
 }
 function setOffset(v){
@@ -634,7 +707,28 @@ function toggleNag(){
 function togglePrint(){
   ws.send(JSON.stringify({cmd:"print"}));
 }
+function upload(){
+  let file = document.getElementById("file").files[0];
+  let form = new FormData();
+  form.append("update", file);
 
+  let xhr = new XMLHttpRequest();
+
+  xhr.upload.onprogress = function(e){
+    if(e.lengthComputable){
+      let p = Math.round((e.loaded / e.total) * 100);
+      document.getElementById("progress").innerText = p + "%";
+    }
+  };
+
+  xhr.onload = function(){
+    alert("升级完成，设备即将重启。" + xhr.responseText);
+    setTimeout(()=>location.reload(), 3000);
+  };
+
+  xhr.open("POST", "/update", true);
+  xhr.send(form);
+}
 function connectWS(){
   let ws = new WebSocket("ws://" + location.hostname + ":81/");
   ws.onopen = () => console.log("WS connected");
@@ -650,6 +744,8 @@ function connectWS(){
       // 文本显示
       el('profile').innerText = d.profile || '-';
       el('offset').innerText = d.offset || '-';
+      el('version').innerText = d.version || '-';
+      el('build').innerText = d.build || '-';
 
       // ✅ 高亮 offset 按钮（关键）
       if (d.offsetval !== undefined) {
@@ -674,6 +770,60 @@ refresh();
 </body>
 </html>
 )rawliteral";
+
+String getSetupPage() {
+
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tesla FSD Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"> 
+<style>
+body { font-family: Arial; text-align:center; background:#111; color:#fff; }
+input, button { padding:10px; margin:10px; width:80%; }
+</style>
+</head>
+<body>
+
+<h2>🚗 Tesla FSD Setup</h2>
+
+<input id="ssid" placeholder="WiFi SSID" value=")rawliteral";
+
+  html += savedSSID;
+
+  html += R"rawliteral("><br>
+
+<input id="pass" placeholder="Password" type="password" value=")rawliteral";
+
+  html += savedPASS;
+
+  html += R"rawliteral("><br>
+
+<button onclick="save()">保存并连接</button>
+
+<script>
+function save(){
+  let ssid = document.getElementById("ssid").value;
+  let pass = document.getElementById("pass").value;
+
+  fetch("/saveWifi", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ssid:ssid, pass:pass})
+  }).then(r=>r.text()).then(t=>{
+    alert(t);
+  });
+}
+</script>
+
+</body>
+</html>
+)rawliteral";
+
+  return html;
+}
 
 void printMergedLog() {
   if (!webPrintEnabled) return;
@@ -808,11 +958,13 @@ void setup() {
 
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
+  loadWiFi();
   WiFi.mode(WIFI_AP_STA);
-  WiFi.begin("你的WIFI","你的WIFI密码");
-  while(WiFi.status()!=WL_CONNECTED) delay(500); 
-  Serial.println(WiFi.localIP());
- 
+  if (savedSSID.length() > 0) {
+    WiFi.begin(savedSSID.c_str(), savedPASS.c_str());
+    while(WiFi.status()!=WL_CONNECTED) delay(500); 
+    Serial.println(WiFi.localIP());
+  }
   IPAddress IP(192,168,4,1);
   IPAddress gateway(192,168,4,1);
   IPAddress subnet(255,255,255,0);
@@ -820,19 +972,34 @@ void setup() {
   WiFi.softAP("Tesla-FSD-TOOL", "1234mima");
   Serial.println("AP Started");
   Serial.println(WiFi.softAPIP());
-
+  
   server.on("/", [](){
-    server.send(200,"text/html",htmlPage);
+    if (savedSSID.length() > 0) {
+      server.send(200,"text/html",htmlPage);
+    }else{
+      server.send(200,"text/html",getSetupPage());
+    }
   });
 
+  server.on("/config", [](){
+    server.send(200, "text/html", getSetupPage());
+  });
   server.on("/data", handleData);
   server.on("/toggleNag", handleToggleNag);
   server.on("/togglePrint", handleTogglePrint);
-  server.on("/setOffset", handleSetOffset);
+  server.on("/setOffset", handleSetOffset); 
+  server.on("/saveWifi", HTTP_POST, handleSaveWifi);
 
   server.on("/update", HTTP_POST, [](){
-    server.send(200,"text/plain","OK");
-    ESP.restart();
+
+    if (Update.hasError()) {
+      server.send(500, "text/plain", "FAIL");
+    } else {
+      server.send(200, "text/plain", "OK");
+      delay(1000);
+      ESP.restart();
+    }
+
   }, handleUpdateUpload);
 
   server.begin();
@@ -849,10 +1016,12 @@ void loop() {
   server.handleClient();
   ws.loop();
   CanFrame frame;
-  if (!twaiReceive(frame)) {
-    digitalWrite(LED_PIN, HIGH);
-    return;
+  if (!otaRunning) {
+    if (!twaiReceive(frame)) {
+      digitalWrite(LED_PIN, HIGH);
+      return;
+    }
+    digitalWrite(LED_PIN, LOW);
+    handler->handelMessage(frame);
   }
-  digitalWrite(LED_PIN, LOW);
-  handler->handelMessage(frame);
 }
