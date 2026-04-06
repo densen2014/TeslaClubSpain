@@ -258,6 +258,7 @@ struct HW4Handler : public CarManagerBase {
       frame.data[7] |= (speedProfile & 0x07) << 4; //速度配置文件
       //frame.data[0] |= (speedOffset & 0x03) << 6; //HW3 only
       //frame.data[1] |= (speedOffset >> 2); //HW3 only
+      frame.data[1] = (frame.data[1] & 0xC0) | 0x0A; // Speed offset +7-8 km/h
       twaiSend(frame);
     }
 
