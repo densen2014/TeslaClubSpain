@@ -32,7 +32,7 @@ void handleData() {
 }
 
 void sendWSData() {
-  if (!handler) return;
+  if (!handler || !webEnabled) return;
 
   String json = getJsonData();
 
