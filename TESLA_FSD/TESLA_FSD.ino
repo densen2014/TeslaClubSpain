@@ -62,7 +62,7 @@ volatile bool eceR79Enabled   = true;
 volatile bool nagEnabled = true;   // 控制是否启用 Nag
 volatile bool serialPrintEnabled = true; // 控制串口输出
 volatile bool otaRunning = false;
-volatile bool webEnabled   = false;
+volatile bool webEnabled   = true;
 volatile int  speedProfile = 1;
 volatile int  speedOffset = 0;
 
@@ -321,11 +321,13 @@ void setup() {
   Serial.println("TWAI ready @ 500kbps (native CAN)");
 
   loadConfig();
-  //webserver();
 
-  //ws.begin();
-  //ws.onEvent(onWsEvent);
-
+  if (webEnabled)
+  {
+    webserver();
+    ws.begin();
+    ws.onEvent(onWsEvent);
+  }
 }
 
 // ============================================================
@@ -333,8 +335,11 @@ void setup() {
 // ============================================================
 
 void loop() {
-  //server.handleClient();
-  //ws.loop();
+  if (webEnabled)
+  {
+    server.handleClient();
+    ws.loop();
+  }
   CanFrame frame;
   if (!otaRunning) {
     if (!twaiReceive(frame)) {
